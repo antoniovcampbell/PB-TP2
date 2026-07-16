@@ -1,0 +1,131 @@
+DOCUMENTAÇÃO DA CAMADA DE PERSISTÊNCIA
+PROJETO INTEGRADO - ENGENHARIA DE SOFTWARES ESCALÁVEIS
+SEGUNDA ENTREGA
+
+
+1. INTRODUÇÃO
+
+Este documento descreve detalhadamente a implementação da camada de persistência do projeto CatalogoWeb, desenvolvida como parte da segunda entrega da disciplina de Engenharia de Softwares Escaláveis. O objetivo principal desta etapa foi evoluir a aplicação monolítica existente, adicionando uma camada de persistência robusta que não apenas suporta operações básicas de CRUD, mas também introduz funcionalidades avançadas como histórico de dados, relacionamentos entre entidades e consultas customizadas.
+
+A camada de persistência foi construída utilizando as seguintes tecnologias: Java 21, Jakarta Persistence API (JPA) com Hibernate como provider, Spring Data JPA para abstração de repositórios, Hibernate Envers para auditoria e histórico de dados, H2 Database como banco em memória para desenvolvimento e testes, Bean Validation (Jakarta Validation) para validação de dados, Lombok para redução de código boilerplate, Spring Boot 4.0.6 como framework base e Maven para gerenciamento de dependências.
+
+
+2. MODELO DE DADOS
+
+O modelo de dados foi projetado considerando os requisitos de consulta e isolamento de domínio adequado, assegurando que a estrutura esteja alinhada com as necessidades empresariais e técnicas da aplicação. Foram definidas duas entidades principais, relacionadas entre si: Produto e Categoria.
+
+A entidade Produto representa um produto no catálogo da aplicação. Ela contém informações básicas do produto, além de um relacionamento com a entidade Categoria e campos de auditoria temporal. A classe é anotada com @Entity para defini-la como entidade JPA, @EntityListeners(AuditingEntityListener.class) para habilitar auditoria automática do Spring Data JPA, @Audited para habilitar o registro de histórico via Hibernate Envers, e @Data do Lombok para geração automática de getters, setters, toString, equals e hashCode. A chave primária é do tipo Long com geração automática via IDENTITY. A tabela gerada se chama PRODUTO e a tabela de auditoria se chama PRODUTO_AUDIT.
+
+A tabela PRODUTO possui as seguintes colunas: id (BIGINT, chave primária auto-incremento), nome (VARCHAR(255), obrigatório e não nulo), descricao (VARCHAR(255), opcional), preco (DOUBLE, obrigatório e valor positivo), categoria_id (BIGINT, chave estrangeira para a tabela CATEGORIA), data_criacao (TIMESTAMP, preenchido automaticamente) e data_modificacao (TIMESTAMP, atualizado automaticamente em cada modificação). As validações aplicadas incluem @NotBlank no campo nome para garantir que não seja nulo nem vazio, @Positive no campo preco para garantir valor positivo, e @Column(nullable = false) para reforçar a restrição a nível de banco de dados.
+
+Os campos de auditoria temporal dataCriacao e dataModificacao são preenchidos automaticamente pelo Spring Data JPA Auditing através das anotações @CreatedDate e @LastModifiedDate respectivamente. O primeiro é preenchido no momento da criação do registro e nunca é atualizado, enquanto o segundo é atualizado sempre que o registro é modificado.
+
+A entidade Categoria representa uma categoria de produtos, permitindo organizar e classificar os produtos do catálogo. A classe é anotada com @Entity, @Audited e @Data. Possui um relacionamento @OneToMany com a entidade Produto, mapeado pelo atributo "categoria" em Produto, com cascade ALL e orphanRemoval para garantir integridade referencial. O atributo produtos é anotado com @JsonIgnore para evitar loop infinito na serialização JSON. A tabela gerada se chama CATEGORIA e a tabela de auditoria se chama CATEGORIA_AUDIT.
+
+A tabela CATEGORIA possui as colunas: id (BIGINT, chave primária auto-incremento), nome (VARCHAR(255), obrigatório e único) e descricao (VARCHAR(255), opcional). As validações incluem @NotBlank no campo nome e @Column(unique = true) para garantir nomes únicos.
+
+O relacionamento entre Produto e Categoria segue o padrão de muitos produtos podem pertencer a uma única categoria, e uma categoria pode ter vários produtos associados. Este relacionamento é implementado de forma bidirecional, onde Produto é o lado proprietário com ManyToOne contendo a chave estrangeira categoria_id, e Categoria é o lado inverso com OneToMany mapeado pelo atributo "categoria" em Produto. O carregamento do relacionamento ManyToOne é do tipo LAZY, otimizando a performance das consultas ao carregar a categoria associada apenas quando explicitamente acessada.
+
+
+3. TABELAS DE AUDITORIA DO HIBERNATE ENVERS
+
+O Hibernate Envers é um framework de auditoria que mantém um histórico completo de todas as alterações realizadas nas entidades auditadas. Ele funciona de forma transparente, registrando automaticamente cada operação de INSERT, UPDATE e DELETE. Para cada entidade anotada com @Audited, o Envers cria automaticamente uma tabela de auditoria correspondente.
+
+A tabela REVINFO armazena metadados de cada revisão ou transação. Suas colunas são rev (INTEGER, identificador único da revisão) e revtstmp (BIGINT, timestamp da revisão em milissegundos).
+
+A tabela PRODUTO_AUDIT armazena todas as versões dos produtos ao longo do tempo. Suas colunas são id (BIGINT, ID do produto), rev (INTEGER, número da revisão com chave estrangeira para REVINFO), revtype (TINYINT, tipo da revisão sendo 0 para INSERT, 1 para UPDATE e 2 para DELETE), nome, descricao, preco, categoria_id, data_criacao e data_modificacao. A combinação de id e rev forma a chave primária composta da tabela.
+
+A tabela CATEGORIA_AUDIT armazena todas as versões das categorias ao longo do tempo. Suas colunas são id (BIGINT, ID da categoria), rev (INTEGER, número da revisão com chave estrangeira para REVINFO), revtype (TINYINT, tipo da revisão), nome e descricao.
+
+As configurações do Envers no application.properties incluem org.hibernate.envers.audit_table_suffix=_audit para definir o sufixo das tabelas de auditoria como _audit, e spring.jpa.properties.org.hibernate.envers.store_data_at_delete=true para garantir que os dados sejam preservados na tabela de auditoria mesmo quando o registro original é excluído.
+
+
+4. REPOSITÓRIOS SPRING DATA
+
+Os repositórios Spring Data JPA abstraem o acesso a dados, eliminando a necessidade de escrever código boilerplate de DAO. Eles fornecem implementações automáticas para métodos CRUD e permitem a definição de consultas customizadas através de convenções de nomenclatura e anotações.
+
+O ProdutoRepository está localizado em repository/ProdutoRepository.java e estende JpaRepository<Produto, Long>. Ele fornece operações CRUD completas para a entidade Produto, além dos seguintes métodos customizados: findByNomeContainingIgnoreCase(String nome) que busca produtos cujo nome contenha o termo informado ignorando maiúsculas e minúsculas, findByPrecoBetween(Double min, Double max) que busca produtos dentro de uma faixa de preço, findByCategoriaId(Long categoriaId) que busca produtos pertencentes a uma categoria específica, findByCategoriaNomeIgnoreCase(String categoriaNome) que busca produtos pelo nome da categoria associada, e buscarPorTermo(String termo) que é uma consulta JPQL personalizada que busca produtos cujo nome ou descrição contenham o termo informado.
+
+O CategoriaRepository está localizado em repository/CategoriaRepository.java e estende JpaRepository<Categoria, Long>. Ele fornece operações CRUD completas além dos métodos findByNomeIgnoreCase(String nome) para buscar categoria pelo nome ignorando maiúsculas e minúsculas, e existsByNomeIgnoreCase(String nome) para verificar se existe uma categoria com o nome informado.
+
+
+5. CAMADA DE SERVIÇO
+
+A camada de serviço encapsula a lógica de negócios da aplicação, orquestrando as operações entre os repositórios e aplicando regras de validação e tratamento de erros.
+
+O ProdutoService está anotado com @Service e possui dependências de ProdutoRepository e CategoriaRepository. Seus métodos incluem listarTodos que retorna todos os produtos, buscarPorId que retorna um produto específico ou lança EntityNotFoundException, salvar que salva um novo produto validando a existência da categoria se informada, atualizar que atualiza um produto existente validando produto e categoria, e deletar que remove um produto validando a existência prévia. Além disso, oferece métodos de busca como buscarPorNome, buscarPorFaixaPreco, buscarPorCategoria e buscarPorTermo que delegam para os respectivos métodos do repositório. As operações de salvar, atualizar e deletar são anotadas com @Transactional para garantir atomicidade.
+
+O CategoriaService está anotado com @Service e possui dependência de CategoriaRepository. Seus métodos incluem listarTodas que retorna todas as categorias, buscarPorId e buscarPorNome que retornam uma categoria específica ou lançam EntityNotFoundException, salvar que cria uma nova categoria, atualizar que modifica nome e descrição de uma categoria existente, e deletar que remove uma categoria validando sua existência.
+
+O HistoricoService está anotado com @Service e @Transactional(readOnly = true), e possui dependência do EntityManager injetado via @PersistenceContext. Este serviço utiliza o Hibernate Envers para consultar o histórico de alterações dos produtos. Seus métodos incluem listarRevisoesProduto que retorna todas as revisões de um produto específico ordenadas da mais recente para a mais antiga, listarTodasRevisoes que retorna todas as revisões de todos os produtos, e buscarProdutoNaRevisao que recupera o estado de um produto em uma revisão específica. A anotação @Transactional(readOnly = true) na classe garante que todas as consultas ao histórico sejam executadas dentro de uma transação de leitura, evitando erros de EntityManager closed.
+
+
+6. CAMADA DE CONTROLLER REST
+
+A camada de controller expõe a funcionalidade da aplicação através de endpoints RESTful, permitindo a integração com o frontend.
+
+O ProdutoController está mapeado na rota /produtos. Seus endpoints incluem GET /produtos para listar todos os produtos, GET /produtos/{id} para buscar produto por ID, GET /produtos/busca para busca com parâmetros flexíveis como nome, precoMin, precoMax, categoriaId e termo, POST /produtos para criar novo produto com validação via @Valid, PUT /produtos/{id} para atualizar produto existente, e DELETE /produtos/{id} para remover produto. O endpoint de busca possui lógica de prioridade onde se termo for informado realiza busca textual, caso contrário verifica os demais parâmetros, e se nenhum parâmetro for informado retorna todos os produtos. Os status HTTP retornados são 200 OK para leituras, 201 Created para criação e 204 No Content para remoção.
+
+O CategoriaController está mapeado na rota /categorias. Seus endpoints incluem GET /categorias para listar todas, GET /categorias/{id} para buscar por ID, POST /categorias para criar nova, PUT /categorias/{id} para atualizar e DELETE /categorias/{id} para remover.
+
+O HistoricoController está mapeado na rota /historico. Seus endpoints incluem GET /historico/produtos para listar revisões de todos os produtos, GET /historico/produtos/{id} para listar revisões de um produto específico, e GET /historico/produtos/{id}/revisao/{revision} para recuperar o estado de um produto em uma revisão específica.
+
+
+7. EXEMPLOS DE USO DA API REST
+
+Para criar uma categoria, deve-se enviar uma requisição POST para /categorias com um corpo JSON contendo nome e descrição. A resposta retorna o status 201 Created com o objeto criado incluindo o ID gerado.
+
+Para criar um produto, deve-se enviar uma requisição POST para /produtos com um corpo JSON contendo nome, descricao, preco e opcionalmente categoria com um objeto contendo o id da categoria desejada. A resposta retorna status 201 Created com o objeto criado incluindo os campos de auditoria dataCriacao e dataModificacao.
+
+Para buscar produtos, pode-se utilizar GET /produtos/busca com diversos parâmetros. Por exemplo, GET /produtos/busca?nome=smart busca produtos contendo "smart" no nome, GET /produtos/busca?precoMin=100&precoMax=5000 busca produtos na faixa de preço, GET /produtos/busca?categoriaId=1 busca produtos de uma categoria específica, e GET /produtos/busca?termo=notebook busca produtos com "notebook" no nome ou descrição.
+
+Para consultar o histórico de um produto, utiliza-se GET /historico/produtos/{id} que retorna uma lista de arrays contendo o estado do produto na revisão, as informações da revisão e o tipo da revisão. Para recuperar o estado em uma revisão específica, utiliza-se GET /historico/produtos/{id}/revisao/{revision}.
+
+
+8. CONFIGURAÇÕES DO PROJETO
+
+Em relação à primeira entrega, foram adicionadas duas novas dependências no arquivo pom.xml: spring-boot-starter-validation que fornece suporte ao Bean Validation para validação de dados nas entidades, e hibernate-envers do grupo org.hibernate.orm que é o framework de auditoria para registro de histórico de alterações.
+
+As configurações do arquivo application.properties foram expandidas para incluir spring.jpa.show-sql=true e spring.jpa.properties.hibernate.format_sql=true para exibir e formatar as queries SQL no console durante o desenvolvimento. As configurações do Hibernate Envers incluem org.hibernate.envers.audit_table_suffix=_audit para definir o sufixo _audit nas tabelas de auditoria, e spring.jpa.properties.org.hibernate.envers.store_data_at_delete=true para preservar os dados na auditoria mesmo após exclusão.
+
+O banco de dados H2 é configurado em memória com a URL jdbc:h2:mem:catalogodb, utilizando o driver org.h2.Driver. O Hibernate está configurado com a estratégia ddl-auto=update para atualização automática do esquema. O console H2 está habilitado em /h2-console para consultas diretas ao banco.
+
+
+9. TESTES AUTOMATIZADOS
+
+Foram implementados 39 testes automatizados distribuídos em 5 classes de teste, cobrindo a camada de persistência, serviços e auditoria.
+
+O ProdutoRepositoryTest contém 11 testes que cobrem salvamento e recuperação de produto por ID, listagem de todos os produtos, busca por nome ignorando maiúsculas e minúsculas, busca por nome parcial, busca por faixa de preço, busca por ID de categoria, busca por nome da categoria, busca textual JPQL no nome ou descrição, retorno de lista vazia quando nenhum resultado é encontrado, atualização de produto com verificação de campo alterado, e remoção de produto com verificação de exclusão.
+
+O CategoriaRepositoryTest contém 5 testes que cobrem salvamento e recuperação de categoria por ID, busca por nome ignorando maiúsculas e minúsculas, verificação de existência por nome, atualização de categoria e remoção de categoria.
+
+O ProdutoServiceTest contém 10 testes que cobrem criação de produto com categoria, exceção ao tentar criar produto com categoria inexistente, busca de produto por ID, exceção ao buscar ID inexistente, atualização de produto, remoção de produto, exceção ao deletar ID inexistente, busca por nome, busca por faixa de preço e busca por termo textual.
+
+O CategoriaServiceTest contém 7 testes que cobrem criação de categoria, listagem de todas as categorias, busca por nome, exceção ao buscar nome inexistente, atualização de categoria, remoção de categoria e exceção ao deletar ID inexistente.
+
+O HistoricoServiceTest contém 5 testes que cobrem registro de histórico após criação de produto, registro de histórico após atualização de produto verificando múltiplas revisões, registro de histórico após deleção de produto com preservação dos dados na auditoria, recuperação de estado anterior verificando versões históricas, e listagem de todas as revisões. Estes testes não utilizam @Transactional pois o Hibernate Envers necessita que a transação seja confirmada para que os registros de auditoria sejam persistidos no banco.
+
+Além destes, o PbTp1ApplicationTests contém 1 teste de carregamento do contexto Spring para garantir que todas as configurações e beans sejam inicializados corretamente. Todos os 39 testes foram executados com sucesso, demonstrando a robustez e confiabilidade da camada de persistência implementada.
+
+
+10. ESTRUTURA DO PROJETO
+
+Os seguintes arquivos foram criados nesta segunda entrega: Categoria.java no pacote model, CategoriaRepository.java no pacote repository, CategoriaService.java, HistoricoService.java no pacote service, CategoriaController.java, HistoricoController.java no pacote controller, AuditConfig.java no pacote config, e os arquivos de teste CategoriaRepositoryTest.java, ProdutoRepositoryTest.java, CategoriaServiceTest.java, HistoricoServiceTest.java e ProdutoServiceTest.java.
+
+Os seguintes arquivos existentes foram modificados: Produto.java no pacote model com adição de relacionamento com Categoria, campos de auditoria e anotação @Audited, ProdutoRepository.java com adição de métodos de consulta customizados, ProdutoService.java com integração com Categoria e métodos de busca, ProdutoController.java com endpoint de busca flexível e validação, e application.properties com configurações de auditoria e SQL formatado.
+
+
+11. CONSIDERAÇÕES TÉCNICAS
+
+O uso de FetchType.LAZY no relacionamento ManyToOne entre Produto e Categoria pode causar exceções LazyInitializationException se a categoria for acessada fora do contexto transacional. Para evitar este problema, os serviços utilizam @Transactional para garantir contexto aberto, e os campos de relacionamento foram excluídos dos métodos toString, equals e hashCode gerados pelo Lombok.
+
+O uso de @Data do Lombok em entidades com relacionamentos bidirecionais pode causar StackOverflowError devido à chamada recursiva dos métodos toString, equals e hashCode. A solução implementada foi utilizar @ToString.Exclude e @EqualsAndHashCode.Exclude nos campos de relacionamento, especificamente categoria em Produto e produtos em Categoria.
+
+O Hibernate Envers registra as revisões de auditoria apenas quando a transação é confirmada. Em testes com @Transactional, o rollback padrão ao final do teste impede que os registros de auditoria sejam persistidos. Por esta razão, os testes do HistoricoService não utilizam @Transactional, permitindo que cada operação seja confirmada individualmente.
+
+O Spring Boot 4.0.6 removeu o suporte a @DataJpaTest e TestEntityManager do módulo spring-boot-test-autoconfigure. Para contornar esta limitação, todos os testes utilizam @SpringBootTest com EntityManager injetado diretamente via @Autowired, mantendo a mesma funcionalidade de teste integrado.
+
+
+12. CONCLUSÃO
+
+A segunda entrega do projeto implementou com sucesso uma camada de persistência robusta para a aplicação monolítica CatalogoWeb, atendendo a todos os requisitos especificados. A modelagem de dados foi realizada com JPA incluindo duas entidades com relacionamento ManyToOne e OneToMany, validações e chaves estrangeiras. Os repositórios Spring Data foram criados com consultas customizadas utilizando convenções de nomenclatura e JPQL. O histórico de dados foi integrado com Hibernate Envers para auditoria completa de todas as alterações incluindo criação, atualização e exclusão, com endpoints REST para consulta. Foram implementados 39 testes automatizados cobrindo repositórios, serviços e funcionalidade de auditoria, todos executando com sucesso. A documentação foi produzida detalhando o design da camada de persistência, modelos de dados e exemplos de uso dos repositórios. A implementação segue as boas práticas de desenvolvimento incluindo separação de responsabilidades, validação de dados, tratamento de erros e uso adequado de transações.
